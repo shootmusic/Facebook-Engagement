@@ -1,0 +1,131 @@
+name: Facebook Auto Engagement
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/10 * * * *'   # Cek setiap 10 menit (bisa disesuaikan)
+
+jobs:
+  auto-engagement:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Restore posted videos history
+      uses: actions/cache@v4
+      with:
+        path: posted_videos.txt
+        key: posted-videos-history
+        restore-keys: |
+          posted-videos-
+
+    - name: Download posted videos history from uploader repo
+      run: |
+        # Ambil posted_videos.txt dari repo uploader
+        curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          "https://raw.githubusercontent.com/shootmusic/YouTube-Auto-Upload/main/posted_videos.txt" \
+          -o posted_videos.txt 2>/dev/null || echo "No file found"
+        
+        if [ ! -s posted_videos.txt ]; then
+          echo "⚠️ No posted_videos.txt found, trying alternative repo..."
+          curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://raw.githubusercontent.com/shootmusic/Facebook-Auto-Upload-/main/posted_videos.txt" \
+            -o posted_videos.txt 2>/dev/null || echo "No file found"
+        fi
+        
+        if [ -s posted_videos.txt ]; then
+          echo "✅ posted_videos.txt loaded"
+          cat posted_videos.txt
+        else
+          echo "⚠️ Still no file, creating empty"
+          touch posted_videos.txt
+        fi
+
+    - name: Auto Like & Comment from Dummy Page
+      env:
+        FB_DUMMY_PAGE_TOKEN: ${{ secrets.FB_DUMMY_PAGE_TOKEN }}
+      run: |
+        if [ ! -f "posted_videos.txt" ] || [ ! -s "posted_videos.txt" ]; then
+          echo "⚠️ No posted_videos.txt found, exiting"
+          exit 0
+        fi
+        
+        # Track video yang sudah di-like/komen
+        touch processed_videos.txt
+        
+        while IFS='|' read -r VIDEO_ID UPLOAD_DATE; do
+          if [ -z "$VIDEO_ID" ]; then
+            continue
+          fi
+          
+          # Skip kalo sudah diproses
+          if grep -q "^$VIDEO_ID$" processed_videos.txt; then
+            continue
+          fi
+          
+          echo "🎯 Processing video: $VIDEO_ID"
+          
+          # Cek apakah video masih ada
+          CHECK=$(curl -s -X GET "https://graph.facebook.com/v18.0/${VIDEO_ID}?access_token=${FB_DUMMY_PAGE_TOKEN}" | jq -r '.id // "error"')
+          
+          if [ "$CHECK" = "error" ] || [ -z "$CHECK" ]; then
+            echo "⚠️ Video $VIDEO_ID not found, skipping"
+            continue
+          fi
+          
+          # List komen variasi
+          COMMENTS=(
+            "⚔️ Viking terbaik! Like from Asupan Random +62! 🔥"
+            "🛡️ Ragnar would be proud! Share this! 💪"
+            "🌊 Another epic moment from Vikings! Like & share!"
+            "👑 Best scene ever! Who agrees? 👇"
+            "🔥 More Vikings content please! Like this comment!"
+            "⚔️ Skål! This is why Vikings is the best series! 🍻"
+            "💀 Brutal! Like if you love Vikings! 🛡️"
+            "🏆 Epic! Who else watches this on repeat? 🔥"
+          )
+          
+          RANDOM_INDEX=$((RANDOM % ${#COMMENTS[@]}))
+          RANDOM_COMMENT="${COMMENTS[$RANDOM_INDEX]}"
+          
+          # LIKE
+          echo "👍 Liking video: $VIDEO_ID"
+          LIKE_RESULT=$(curl -s -X POST "https://graph.facebook.com/v18.0/${VIDEO_ID}/likes?access_token=${FB_DUMMY_PAGE_TOKEN}")
+          if echo "$LIKE_RESULT" | jq -e '.error' > /dev/null; then
+            echo "⚠️ Like failed: $(echo "$LIKE_RESULT" | jq -r '.error.message')"
+          else
+            echo "✅ Liked"
+          fi
+          
+          sleep 2
+          
+          # KOMEN
+          echo "💬 Commenting: $RANDOM_COMMENT"
+          COMMENT_RESULT=$(curl -s -X POST "https://graph.facebook.com/v18.0/${VIDEO_ID}/comments" \
+            -d "message=${RANDOM_COMMENT}" \
+            -d "access_token=${FB_DUMMY_PAGE_TOKEN}")
+          
+          if echo "$COMMENT_RESULT" | jq -e '.error' > /dev/null; then
+            echo "⚠️ Comment failed: $(echo "$COMMENT_RESULT" | jq -r '.error.message')"
+          else
+            echo "✅ Commented: $(echo "$COMMENT_RESULT" | jq -r '.id')"
+          fi
+          
+          # Tandai sudah diproses
+          echo "$VIDEO_ID" >> processed_videos.txt
+          
+          sleep 3
+          
+        done < posted_videos.txt
+        
+        echo "✅ Auto engagement completed!"
+        
+    - name: Save processed videos
+      uses: actions/cache/save@v4
+      with:
+        path: processed_videos.txt
+        key: processed-videos-${{ github.run_number }}
+        restore-keys: |
+          processed-videos-
